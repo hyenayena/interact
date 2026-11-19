@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Graph</title>
+<link rel="stylesheet" href="/interact/assets/graph.css">
+<script type="module" src="/interact/assets/graph.js"></script>
+</head>
+<body>
+<header>
+	<h1 id="title">Graph</h1>
+	<span id="status" role="status"></span>
+</header>
+<div id="toolbar" hidden>
+	<div class="group" role="group" aria-label="Edge kind">
+		<button id="kind-plain" type="button" data-kind="plain" aria-pressed="true">Plain</button>
+		<button id="kind-directed" type="button" data-kind="directed" aria-pressed="false">Directed</button>
+		<button id="kind-bidirectional" type="button" data-kind="bidirectional" aria-pressed="false">Both ways</button>
+	</div>
+	<button id="connect" type="button" aria-pressed="false">Connect</button>
+	<button id="remove" type="button" disabled>Remove edge</button>
+	<button id="fit" type="button">Fit</button>
+	<button id="done" type="button" class="primary">Done</button>
+</div>
+<main>
+	<canvas id="canvas" tabindex="0" aria-label="Graph"></canvas>
+</main>
+<footer id="help"></footer>
+</body>
+</html>
