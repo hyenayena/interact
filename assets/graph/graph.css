@@ -126,3 +126,38 @@ canvas {
 	outline: none;
 	touch-action: none;
 }
+
+#node-panel {
+	align-items: center;
+	gap: 10px;
+}
+
+#node-label {
+	max-width: 160px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--muted);
+}
+
+#swatches {
+	display: flex;
+	gap: 5px;
+}
+
+#node-color {
+	color: var(--muted);
+	font-size: 12px;
+}
+
+.swatch {
+	width: 18px;
+	height: 18px;
+	padding: 0;
+	border-radius: 50%;
+}
+
+.swatch[aria-pressed='true'] {
+	outline: 2px solid var(--text);
+	outline-offset: 1px;
+}

@@ -2,13 +2,13 @@ import {randomBytes} from 'node:crypto';
 import {mkdir, readdir, readFile, rename, rm, stat, writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import type {Logger} from '../../../../src/api.js';
-import {checkEdges, validateGraph, type GraphEdge, type GraphInput, type GraphNode} from './schema.js';
+import {applyStyles, checkEdges, checkNodeStyles, styleOf, validateGraph, type GraphChange, type GraphEdge, type GraphInput, type GraphNode, type NodeStyle} from './schema.js';
 
 export const GRAPH_ID_RE = /^[A-Za-z0-9_-]{16}$/;
 export const KEEP_GRAPHS = 100;
 
 export type GraphRecord = {
-	v: 1;
+	v: 2;
 	id: string;
 	title?: string;
 	interactive: boolean;
@@ -16,6 +16,7 @@ export type GraphRecord = {
 	updatedAt: number;
 	finishedAt?: number;
 	nodes: GraphNode[];
+	initialStyles: NodeStyle[];
 	initialEdges: GraphEdge[];
 	edges: GraphEdge[];
 };
@@ -33,8 +34,8 @@ export type GraphStore = {
 	create(input: GraphInput, interactive: boolean): Promise<GraphRecord>;
 	read(id: string): Promise<GraphRecord | undefined>;
 	list(): Promise<GraphRecord[]>;
-	saveEdges(id: string, edges: GraphEdge[]): Promise<GraphRecord>;
-	finish(id: string, edges: GraphEdge[]): Promise<GraphRecord>;
+	save(id: string, change: GraphChange): Promise<GraphRecord>;
+	finish(id: string, change: GraphChange): Promise<GraphRecord>;
 };
 
 export type StoreOptions = {dataDir: string; log: Logger; now?: () => number; random?: (size: number) => Buffer};
@@ -136,13 +137,14 @@ export function createGraphStore(options: StoreOptions): GraphStore {
 			const id = random(12).toString('base64url');
 			const at = now();
 			const record: GraphRecord = {
-				v: 1,
+				v: 2,
 				id,
 				...(input.title !== undefined && {title: input.title}),
 				interactive,
 				createdAt: at,
 				updatedAt: at,
 				nodes: input.nodes,
+				initialStyles: input.nodes.map(styleOf),
 				initialEdges: input.edges,
 				edges: input.edges,
 			};
@@ -158,38 +160,54 @@ export function createGraphStore(options: StoreOptions): GraphStore {
 			}
 			return out.sort((a, b) => b.createdAt - a.createdAt);
 		},
-		saveEdges(id, edges) {
+		save(id, change) {
 			return exclusive(id, async () => {
 				const record = await editable(id);
-				const next = {...record, edges, updatedAt: now()};
+				const next = {...record, nodes: applyStyles(record.nodes, change.styles), edges: change.edges, updatedAt: now()};
 				await write(next);
 				return next;
 			});
 		},
-		finish(id, edges) {
+		finish(id, change) {
 			return exclusive(id, async () => {
 				const record = await editable(id);
 				const at = now();
-				const next = {...record, edges, updatedAt: at, finishedAt: at};
+				const next = {...record, nodes: applyStyles(record.nodes, change.styles), edges: change.edges, updatedAt: at, finishedAt: at};
 				await write(next);
-				log.info('graph finished', {edges: edges.length});
+				log.info('graph finished', {edges: change.edges.length, restyled: change.styles?.length ?? 0});
 				return next;
 			});
 		},
 	};
 }
 
+// Files from earlier versions carry a per-node size; it is dropped before validation.
+function dropSize(value: unknown): unknown {
+	if (!Array.isArray(value)) return value;
+	return value.map(item => {
+		if (typeof item !== 'object' || item === null || Array.isArray(item) || !Object.hasOwn(item, 'size')) return item;
+		const {size: _size, ...rest} = item as Record<string, unknown>;
+		return rest;
+	});
+}
+
 function parseRecord(id: string, value: unknown): GraphRecord {
 	if (typeof value !== 'object' || value === null) throw new Error('not an object');
 	const raw = value as Record<string, unknown>;
-	if (raw.v !== 1 || raw.id !== id) throw new Error('wrong version or id');
-	const graph = validateGraph({title: raw.title, nodes: raw.nodes, edges: raw.edges});
+	if ((raw.v !== 1 && raw.v !== 2) || raw.id !== id) throw new Error('wrong version or id');
+	const graph = validateGraph({title: raw.title, nodes: dropSize(raw.nodes), edges: raw.edges});
 	const initialEdges = checkEdges(graph.nodes, raw.initialEdges);
+	let initialStyles: NodeStyle[];
+	if (raw.v === 1) initialStyles = graph.nodes.map(styleOf);
+	else {
+		initialStyles = checkNodeStyles(graph.nodes, dropSize(raw.initialStyles), 'initialStyles');
+		if (initialStyles.length !== graph.nodes.length) throw new Error('bad initialStyles');
+	}
 	for (const key of ['createdAt', 'updatedAt'] as const) if (typeof raw[key] !== 'number') throw new Error(`bad ${key}`);
 	if (typeof raw.interactive !== 'boolean') throw new Error('bad interactive');
 	if (raw.finishedAt !== undefined && typeof raw.finishedAt !== 'number') throw new Error('bad finishedAt');
 	return {
-		v: 1,
+		v: 2,
 		id,
 		...(graph.title !== undefined && {title: graph.title}),
 		interactive: raw.interactive,
@@ -197,6 +215,7 @@ function parseRecord(id: string, value: unknown): GraphRecord {
 		updatedAt: raw.updatedAt as number,
 		...(raw.finishedAt !== undefined && {finishedAt: raw.finishedAt as number}),
 		nodes: graph.nodes,
+		initialStyles,
 		initialEdges,
 		edges: graph.edges,
 	};

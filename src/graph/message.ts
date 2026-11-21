@@ -1,4 +1,4 @@
-import {formatEdge, type EdgeDiff} from './schema.js';
+import {formatEdge, formatRestyle, type GraphDiff} from './schema.js';
 import type {GraphRecord} from './store.js';
 
 export const MESSAGE_MAX = 4000;
@@ -12,14 +12,14 @@ const clipTitle = (title: string): string => {
 	return chars.length > TITLE_MAX ? `${chars.slice(0, TITLE_MAX - 1).join('')}…` : clean;
 };
 
-function listLine(label: string, entries: readonly string[], shown: number): string {
+function listLine(label: string, entries: readonly string[], shown: number, noun = 'edge'): string {
 	if (entries.length === 0) return `${label}: (none)`;
-	if (shown === 0) return `${label}: ${entries.length} edge${entries.length === 1 ? '' : 's'}`;
+	if (shown === 0) return `${label}: ${entries.length} ${noun}${entries.length === 1 ? '' : 's'}`;
 	const head = entries.slice(0, shown).join('; ');
 	return entries.length > shown ? `${label}: ${head}; and ${entries.length - shown} more` : `${label}: ${head}`;
 }
 
-export function resultMessage(graph: Pick<GraphRecord, 'id' | 'title'>, diff: EdgeDiff): string {
+export function resultMessage(graph: Pick<GraphRecord, 'id' | 'title'>, diff: GraphDiff): string {
 	const added = diff.added.map(formatEdge);
 	const removed = diff.removed.map(formatEdge);
 	const changed = diff.changed.map(c => `${formatEdge(c.before)} => ${formatEdge(c.after)}`);
@@ -31,6 +31,7 @@ export function resultMessage(graph: Pick<GraphRecord, 'id' | 'title'>, diff: Ed
 			listLine('Added', added, shown),
 			listLine('Removed', removed, shown),
 			listLine('Changed', changed, shown),
+			listLine('Restyled', diff.restyled.map(formatRestyle), shown, 'node'),
 			`The full graph: interact graph get ${graph.id}`,
 		].join('\n');
 		if (text.length <= MESSAGE_MAX) break;

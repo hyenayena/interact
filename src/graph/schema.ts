@@ -17,10 +17,14 @@ const HEX_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 const UNSAFE = new RegExp('[\\u0000-\\u001f\\u007f-\\u009f\\u202a-\\u202e\\u2066-\\u2069]');
 
 export type EdgeKind = (typeof EDGE_KINDS)[number];
-export type GraphNode = {id: string; label: string; size: number; color: string};
+export type GraphNode = {id: string; label: string; color: string};
 export type GraphEdge = {from: string; to: string; kind: EdgeKind};
 export type GraphInput = {title?: string; nodes: GraphNode[]; edges: GraphEdge[]};
 export type EdgeDiff = {added: GraphEdge[]; removed: GraphEdge[]; changed: {before: GraphEdge; after: GraphEdge}[]};
+export type NodeStyle = {id: string; color: string};
+export type Restyle = {id: string; before: {color: string}; after: {color: string}};
+export type GraphDiff = EdgeDiff & {restyled: Restyle[]};
+export type GraphChange = {edges: GraphEdge[]; styles?: NodeStyle[]};
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const echo = (v: unknown): string => (typeof v === 'string' && NODE_ID_RE.test(v) ? v : '?');
@@ -79,6 +83,61 @@ export function checkEdges(nodes: readonly {id: string}[], value: unknown): Grap
 	return checkEdgeList(new Set(nodes.map(n => n.id)), value, 'edges');
 }
 
+export function checkNodeStyles(nodes: readonly {id: string}[], value: unknown, path = 'nodes'): NodeStyle[] {
+	if (!Array.isArray(value)) throw new Error(`${path}: must be a list`);
+	if (value.length > GRAPH_LIMITS.nodes) throw new Error(`${path}: more than ${GRAPH_LIMITS.nodes} nodes`);
+	const ids = new Set(nodes.map(n => n.id));
+	const seen = new Set<string>();
+	return value.map((item: unknown, i): NodeStyle => {
+		const where = `${path}[${i}]`;
+		if (!isObject(item)) throw new Error(`${where}: must be an object`);
+		checkKeys(item, ['id', 'color'], where);
+		const id = item.id;
+		if (typeof id !== 'string' || !ids.has(id)) throw new Error(`${where}.id: no such node${typeof id === 'string' && NODE_ID_RE.test(id) ? ` "${id}"` : ''}`);
+		if (seen.has(id)) throw new Error(`${where}.id: duplicate id "${id}"`);
+		seen.add(id);
+		return {id, color: resolveColor(item.color, `${where}.color`)};
+	});
+}
+
+export function checkChange(nodes: readonly {id: string}[], value: unknown): GraphChange {
+	if (!isObject(value) || !('edges' in value) || Object.keys(value).some(k => k !== 'edges' && k !== 'nodes')) {
+		throw new Error('The body must be {"edges": [...], "nodes"?: [...]}');
+	}
+	const edges = checkEdges(nodes, value.edges);
+	return 'nodes' in value ? {edges, styles: checkNodeStyles(nodes, value.nodes)} : {edges};
+}
+
+export const styleOf = (n: GraphNode): NodeStyle => ({id: n.id, color: n.color});
+
+export function applyStyles(nodes: readonly GraphNode[], styles?: readonly NodeStyle[]): GraphNode[] {
+	const byId = new Map((styles ?? []).map(s => [s.id, s]));
+	return nodes.map(n => {
+		const s = byId.get(n.id);
+		return s ? {...n, color: s.color} : n;
+	});
+}
+
+export function diffStyles(initial: readonly NodeStyle[], current: readonly NodeStyle[]): Restyle[] {
+	const before = new Map(initial.map(s => [s.id, s]));
+	const out: Restyle[] = [];
+	for (const s of current) {
+		const old = before.get(s.id);
+		if (old && (old.color !== s.color)) {
+			out.push({id: s.id, before: {color: old.color}, after: {color: s.color}});
+		}
+	}
+	return out;
+}
+
+export function colorName(hex: string): string {
+	return Object.entries(COLORS).find(([, value]) => value === hex)?.[0] ?? hex;
+}
+
+export function formatRestyle(r: Restyle): string {
+	return `${r.id}: color ${colorName(r.before.color)} -> ${colorName(r.after.color)}`;
+}
+
 export function validateGraph(value: unknown): GraphInput {
 	if (!isObject(value)) throw new Error('The graph must be a JSON object');
 	checkKeys(value, ['title', 'nodes', 'edges'], 'graph');
@@ -89,16 +148,14 @@ export function validateGraph(value: unknown): GraphInput {
 	const nodes = value.nodes.map((item: unknown, i): GraphNode => {
 		const where = `nodes[${i}]`;
 		if (!isObject(item)) throw new Error(`${where}: must be an object`);
-		checkKeys(item, ['id', 'label', 'size', 'color'], where);
+		checkKeys(item, ['id', 'label', 'color'], where);
 		const id = item.id;
 		if (typeof id !== 'string' || !NODE_ID_RE.test(id)) throw new Error(`${where}.id: must be 1 to 64 characters of letters, digits and _ . : -`);
 		if (ids.has(id)) throw new Error(`${where}.id: duplicate id "${id}"`);
 		ids.add(id);
 		const label = item.label === undefined ? id : checkText(item.label, GRAPH_LIMITS.label, `${where}.label`) || id;
-		const size = item.size === undefined ? 2 : item.size;
-		if (typeof size !== 'number' || !Number.isInteger(size) || size < 1 || size > 5) throw new Error(`${where}.size: must be a whole number from 1 to 5`);
 		const color = resolveColor(item.color === undefined ? 'blue' : item.color, `${where}.color`);
-		return {id, label, size, color};
+		return {id, label, color};
 	});
 	const edges = value.edges === undefined ? [] : checkEdgeList(ids, value.edges, 'edges');
 	return {...(title !== undefined && title !== '' && {title}), nodes, edges};
@@ -133,4 +190,13 @@ export function diffEdges(initial: readonly GraphEdge[], current: readonly Graph
 	}
 	for (const [key, edge] of before) if (!after.has(key)) diff.removed.push(edge);
 	return diff;
+}
+
+export function diffGraph(g: {
+	initialEdges: readonly GraphEdge[];
+	edges: readonly GraphEdge[];
+	initialStyles: readonly NodeStyle[];
+	nodes: readonly NodeStyle[];
+}): GraphDiff {
+	return {...diffEdges(g.initialEdges, g.edges), restyled: diffStyles(g.initialStyles, g.nodes)};
 }

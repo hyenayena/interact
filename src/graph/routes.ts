@@ -3,7 +3,7 @@ import type {Logger} from '../../../../src/api.js';
 import type {ModuleMessageResult} from '../deps/chat.js';
 import type {WebRequest, WebResponse, WebRoute} from '../deps/web.js';
 import {resultMessage} from './message.js';
-import {checkEdges, diffEdges, GRAPH_LIMITS, type GraphEdge} from './schema.js';
+import {checkChange, COLORS, diffGraph, GRAPH_LIMITS, type GraphChange} from './schema.js';
 import {GRAPH_ID_RE, StoreError, type GraphRecord, type GraphStore} from './store.js';
 
 const ASSETS: Readonly<Record<string, {file: string; type: string}>> = Object.freeze({
@@ -48,22 +48,19 @@ export function createGraphRoutes(deps: RoutesDeps): WebRoute[] {
 	};
 
 	const data = (g: GraphRecord): WebResponse =>
-		json(200, {id: g.id, title: g.title ?? null, interactive: g.interactive, finished: g.finishedAt !== undefined, nodes: g.nodes, edges: g.edges});
+		json(200, {id: g.id, title: g.title ?? null, interactive: g.interactive, finished: g.finishedAt !== undefined, nodes: g.nodes, edges: g.edges, palette: COLORS});
 
-	const readEdges = (g: GraphRecord, req: WebRequest): GraphEdge[] | WebResponse => {
+	const readChange = (g: GraphRecord, req: WebRequest): {change: GraphChange} | {error: WebResponse} => {
 		let value: unknown;
 		try {
 			value = JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(req.body));
 		} catch {
-			return fail(400, 'The body is not valid JSON');
-		}
-		if (typeof value !== 'object' || value === null || Array.isArray(value) || Object.keys(value).length !== 1 || !('edges' in value)) {
-			return fail(400, 'The body must be {"edges": [...]}');
+			return {error: fail(400, 'The body is not valid JSON')};
 		}
 		try {
-			return checkEdges(g.nodes, (value as {edges: unknown}).edges);
+			return {change: checkChange(g.nodes, value)};
 		} catch (err) {
-			return fail(400, (err as Error).message);
+			return {error: fail(400, (err as Error).message)};
 		}
 	};
 
@@ -79,17 +76,18 @@ export function createGraphRoutes(deps: RoutesDeps): WebRoute[] {
 		if (type !== 'application/json') return fail(415, 'The body must be application/json');
 		if (!g.interactive) return fail(403, 'This graph is view only');
 		if (g.finishedAt !== undefined) return fail(409, 'The graph is finished');
-		const edges = readEdges(g, req);
-		if (!Array.isArray(edges)) return edges;
+		const read = readChange(g, req);
+		if ('error' in read) return read.error;
+		const {change} = read;
 		try {
 			if (action === 'edges') {
-				await store.saveEdges(g.id, edges);
+				await store.save(g.id, change);
 				return json(200, {ok: true});
 			}
-			const done = await store.finish(g.id, edges);
+			const done = await store.finish(g.id, change);
 			let chat: ModuleMessageResult | 'refused';
 			try {
-				chat = await post(resultMessage(done, diffEdges(done.initialEdges, done.edges)));
+				chat = await post(resultMessage(done, diffGraph(done)));
 			} catch (err) {
 				chat = 'refused';
 				log.warn('graph result not sent', {err});

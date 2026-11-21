@@ -7,7 +7,7 @@ const file = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../a
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const sim: any = await import(pathToFileURL(file).href);
 
-const node = (id: string, size = 2) => ({id, size});
+const node = (id: string) => ({id});
 const dist = (s: any, a: string, b: string): number => {
 	const p = s.index.get(a);
 	const q = s.index.get(b);
@@ -26,8 +26,39 @@ test('the initial layout is finite and spread out', () => {
 	assert.equal(new Set(s.nodes.map((n: any) => `${n.x.toFixed(3)},${n.y.toFixed(3)}`)).size, 30);
 });
 
-test('node radius follows the size', () => {
-	assert.deepEqual([1, 2, 3, 4, 5].map(sim.radiusOf), [5, 7, 10, 14, 19]);
+test('radius grows with the degree and is capped', () => {
+	assert.deepEqual([0, 1, 4, 100].map(sim.radiusOf), [5, 10, 15, 40]);
+	assert.equal(sim.radiusOf(1000), sim.MAX_RADIUS);
+	for (let d = 1; d <= 60; d++) assert.ok(sim.radiusOf(d) >= sim.radiusOf(d - 1), String(d));
+});
+
+test('setEdges sets each radius from the degree', () => {
+	const s = sim.createSim(['a', 'b', 'c', 'd', 'e'].map(node), []);
+	assert.ok(s.nodes.every((n: any) => n.r === 5));
+	sim.setEdges(s, [{from: 'a', to: 'b'}, {from: 'a', to: 'c'}, {from: 'd', to: 'a'}, {from: 'a', to: 'missing'}]);
+	assert.equal(s.index.get('a').r, sim.radiusOf(3));
+	for (const id of ['b', 'c', 'd']) assert.equal(s.index.get(id).r, sim.radiusOf(1));
+	assert.equal(s.index.get('e').r, 5);
+	sim.setEdges(s, [{from: 'a', to: 'b'}]);
+	assert.equal(s.index.get('a').r, sim.radiusOf(1));
+	assert.equal(s.index.get('c').r, 5);
+});
+
+test('self-loops and edges to missing nodes do not count towards the degree, duplicates do', () => {
+	const s = sim.createSim(['a', 'b', 'c'].map(node), []);
+	sim.setEdges(s, [{from: 'a', to: 'a'}, {from: 'a', to: 'ghost'}, {from: 'ghost', to: 'b'}]);
+	assert.ok(s.nodes.every((n: any) => n.r === 5));
+	assert.equal(s.links.length, 0);
+	sim.setEdges(s, [{from: 'a', to: 'b'}, {from: 'a', to: 'b'}, {from: 'b', to: 'a'}, {from: 'c', to: 'c'}]);
+	assert.equal(s.index.get('a').r, sim.radiusOf(3));
+	assert.equal(s.index.get('b').r, sim.radiusOf(3));
+	assert.equal(s.index.get('c').r, 5);
+});
+
+test('the radius never exceeds the cap however many edges', () => {
+	const s = sim.createSim(['a', 'b'].map(node), []);
+	sim.setEdges(s, Array.from({length: 500}, () => ({from: 'a', to: 'b'})));
+	assert.ok(s.nodes.every((n: any) => n.r === sim.MAX_RADIUS));
 });
 
 test('a connected pair ends closer than an unconnected pair', () => {
@@ -62,7 +93,7 @@ test('a pinned node stays where it is and unpinning frees it', () => {
 });
 
 test('the layout settles within 400 ticks', () => {
-	const nodes = Array.from({length: 40}, (_, i) => node(`n${i}`, (i % 5) + 1));
+	const nodes = Array.from({length: 40}, (_, i) => node(`n${i}`));
 	const edges = Array.from({length: 39}, (_, i) => ({from: `n${i}`, to: `n${i + 1}`}));
 	const s = sim.createSim(nodes, edges);
 	const ticks = settle(s);
@@ -80,4 +111,37 @@ test('reheat and setEdges restart movement', () => {
 	sim.reheat(s, 0.3);
 	assert.ok(sim.isActive(s));
 	assert.equal(sim.tick(s), true);
+});
+
+test('a settled tree spreads out: no two nodes overlap', () => {
+	const nodes = Array.from({length: 120}, (_, i) => node(`n${i}`));
+	const edges = nodes.slice(1).map((n, i) => ({from: n.id, to: `n${Math.floor(i / 3)}`}));
+	const s = sim.createSim(nodes, edges);
+	settle(s, 1000);
+	let gap = Infinity;
+	for (let i = 0; i < s.nodes.length; i++)
+		for (let j = i + 1; j < s.nodes.length; j++) {
+			const a = s.nodes[i];
+			const b = s.nodes[j];
+			gap = Math.min(gap, Math.hypot(a.x - b.x, a.y - b.y) - a.r - b.r);
+		}
+	assert.ok(gap > 2, `nodes overlap: gap ${gap.toFixed(1)}`);
+});
+
+test('a hub with many edges does not overlap its neighbours', () => {
+	const nodes = Array.from({length: 61}, (_, i) => node(`n${i}`));
+	const s = sim.createSim(nodes, []);
+	settle(s, 1000);
+	sim.setEdges(s, nodes.slice(1).map(n => ({from: 'n0', to: n.id})));
+	sim.reheat(s, 0.3);
+	settle(s, 1000);
+	assert.equal(s.index.get('n0').r, sim.MAX_RADIUS);
+	let gap = Infinity;
+	for (let i = 0; i < s.nodes.length; i++)
+		for (let j = i + 1; j < s.nodes.length; j++) {
+			const a = s.nodes[i];
+			const b = s.nodes[j];
+			gap = Math.min(gap, Math.hypot(a.x - b.x, a.y - b.y) - a.r - b.r);
+		}
+	assert.ok(gap > 2, `nodes overlap: gap ${gap.toFixed(1)}`);
 });

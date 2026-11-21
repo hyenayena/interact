@@ -25,7 +25,7 @@ function setup(over: {state?: string; baseUrl?: () => string; roots?: string[]} 
 	const command = createCommand({
 		store,
 		log: noopLog,
-		web: {baseUrl: over.baseUrl ?? (() => 'http://127.0.0.1:7300'), status: () => ({state: over.state ?? 'running'}) as never},
+		web: {baseUrl: over.baseUrl ?? (() => 'http://127.0.0.1:8080'), status: () => ({state: over.state ?? 'running'}) as never},
 		fileRoots: over.roots ?? [work],
 	});
 	return {store, command, work, root};
@@ -92,7 +92,7 @@ test('new makes a view only graph from inline JSON', async () => {
 	const [rec] = await store.list();
 	assert.equal(rec!.interactive, false);
 	assert.equal(c.out[0], `Graph ${rec!.id} (view only): 2 nodes, 1 edges`);
-	assert.equal(c.out[1], `Open: http://127.0.0.1:7300/interact/graph/${rec!.id}`);
+	assert.equal(c.out[1], `Open: http://127.0.0.1:8080/interact/graph/${rec!.id}`);
 	assert.equal(c.out.length, 2);
 });
 
@@ -131,6 +131,13 @@ test('new reports invalid graphs with the invalid kind', async () => {
 	const {command} = setup();
 	await assert.rejects(async () => command.run(['graph', 'new', '{"nodes":[]}'], ctx().value), (e: Error & {kind?: string}) => e.kind === 'invalid' && /at least one node/.test(e.message));
 	await assert.rejects(async () => command.run(['graph', 'new', 'not json'], ctx().value), (e: Error & {kind?: string}) => e.kind === 'invalid' && e.message === 'The graph is not valid JSON');
+});
+
+test('new refuses a size key, and the help does not mention one', async () => {
+	const {command} = setup();
+	await assert.rejects(async () => command.run(['graph', 'new', '{"nodes":[{"id":"a","size":2}]}'], ctx().value), (e: Error & {kind?: string}) => e.kind === 'invalid' && /nodes\[0\]: unknown key/.test(e.message));
+	const notes = command.subcommands!.flatMap(s => s.notes ?? []).join('\n');
+	assert.doesNotMatch(notes, /"size"\?/);
 });
 
 test('new --file reads a file under the allowed roots', async () => {
@@ -173,29 +180,32 @@ test('a bad file never has its content echoed', async () => {
 
 test('get prints the graph and the changes', async () => {
 	const { command, store } = setup();
-	const rec = await store.create({title: 'T', nodes: [{id: 'a', label: 'Alpha', size: 2, color: '#fff'}, {id: 'b', label: 'b', size: 2, color: '#fff'}, {id: 'c', label: 'c', size: 2, color: '#fff'}], edges: [{from: 'a', to: 'b', kind: 'plain'}]}, true);
-	await store.finish(rec.id, [{from: 'b', to: 'c', kind: 'directed'}]);
+	const rec = await store.create({title: 'T', nodes: [{id: 'a', label: 'Alpha', color: '#fff'}, {id: 'b', label: 'b', color: '#fff'}, {id: 'c', label: 'c', color: '#fff'}], edges: [{from: 'a', to: 'b', kind: 'plain'}]}, true);
+	await store.finish(rec.id, {edges: [{from: 'b', to: 'c', kind: 'directed'}], styles: [{id: 'a', color: '#f85149'}]});
 	const c = ctx();
 	await command.run(['graph', 'get', rec.id], c.value);
 	const text = c.out.join('\n');
 	assert.match(text, /^Graph .* "T": finished at \d{4}-\d\d-\d\d \d\d:\d\d UTC/);
-	assert.match(text, /  a: Alpha/);
+	assert.match(text, /  a: Alpha \(red\)/);
+	assert.match(text, /  b: b \(#fff\)/);
 	assert.match(text, /Edges \(1\):\n  b -> c/);
 	assert.match(text, /Added: b -> c/);
 	assert.match(text, /Removed: a -- b/);
 	assert.match(text, /Changed: \(none\)/);
+	assert.match(text, /Restyled: a: color #fff -> red/);
 });
 
 test('get --json prints the stored record without the version, plus the diff', async () => {
 	const {command, store} = setup();
-	const rec = await store.create({nodes: [{id: 'a', label: 'a', size: 2, color: '#fff'}], edges: []}, false);
+	const rec = await store.create({nodes: [{id: 'a', label: 'a', color: '#fff'}], edges: []}, false);
 	const c = ctx();
 	await command.run(['graph', 'get', rec.id, '--json'], c.value);
 	assert.equal(c.out.length, 1);
 	const json = JSON.parse(c.out[0]!);
 	assert.equal('v' in json, false);
 	assert.equal(json.id, rec.id);
-	assert.deepEqual(json.diff, {added: [], removed: [], changed: []});
+	assert.deepEqual(json.diff, {added: [], removed: [], changed: [], restyled: []});
+	assert.deepEqual(json.initialStyles, [{id: 'a', color: '#fff'}]);
 	const v = ctx();
 	await command.run(['graph', 'get', '--json', rec.id], v.value);
 	assert.equal(v.out.length, 1);
@@ -203,7 +213,7 @@ test('get --json prints the stored record without the version, plus the diff', a
 
 test('get states view only graphs and refuses unknown or malformed ids', async () => {
 	const {command, store} = setup();
-	const rec = await store.create({nodes: [{id: 'a', label: 'a', size: 2, color: '#fff'}], edges: []}, false);
+	const rec = await store.create({nodes: [{id: 'a', label: 'a', color: '#fff'}], edges: []}, false);
 	const c = ctx();
 	await command.run(['graph', 'get', rec.id], c.value);
 	assert.match(c.out[0]!, /: view only$/);
@@ -219,7 +229,7 @@ test('list is empty or a table', async () => {
 	const empty = ctx();
 	await command.run(['graph', 'list'], empty.value);
 	assert.deepEqual(empty.out, ['No graphs yet.']);
-	await store.create({title: 'x'.repeat(100), nodes: [{id: 'a', label: 'a', size: 2, color: '#fff'}], edges: []}, true);
+	await store.create({title: 'x'.repeat(100), nodes: [{id: 'a', label: 'a', color: '#fff'}], edges: []}, true);
 	const c = ctx();
 	await command.run(['graph', 'list'], c.value);
 	const blocks = JSON.parse(c.out[0]!);

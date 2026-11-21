@@ -3,18 +3,22 @@ export const MIN_ALPHA = 0.001;
 const ALPHA_DECAY = 0.0228;
 const DRAG_TARGET = 0.3;
 const VELOCITY_KEEP = 0.6;
-const REPULSION = 300;
-const CUTOFF = 600;
-const MIN_DISTANCE_SQ = 25;
+// Repulsion falls off as 1/d, as in d3's many-body force; 1/d² is too weak and the graph collapses.
+const REPULSION = 80;
+const CUTOFF = 1000;
+const MIN_DISTANCE = 5;
+const COLLIDE_GAP = 8;
 const SPRING_LENGTH = 90;
 const SPRING_STRENGTH = 0.08;
-const CENTERING = 0.02;
+const CENTERING = 0.005;
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 
-export const NODE_RADIUS = [5, 7, 10, 14, 19];
+const RADIUS_BASE = 5;
+const RADIUS_STEP = 5;
+export const MAX_RADIUS = 40;
 
-export function radiusOf(size) {
-	return NODE_RADIUS[Math.min(5, Math.max(1, Math.round(size))) - 1];
+export function radiusOf(degree) {
+	return Math.min(MAX_RADIUS, RADIUS_BASE + RADIUS_STEP * Math.sqrt(Math.max(0, degree)));
 }
 
 export function createSim(nodes, edges) {
@@ -22,7 +26,7 @@ export function createSim(nodes, edges) {
 	nodes.forEach((node, i) => {
 		const radius = 18 * Math.sqrt(i + 0.5);
 		const angle = i * GOLDEN_ANGLE;
-		const item = {id: node.id, x: radius * Math.cos(angle), y: radius * Math.sin(angle), vx: 0, vy: 0, r: radiusOf(node.size), pinned: false};
+		const item = {id: node.id, x: radius * Math.cos(angle), y: radius * Math.sin(angle), vx: 0, vy: 0, r: radiusOf(0), pinned: false};
 		sim.nodes.push(item);
 		sim.index.set(node.id, item);
 	});
@@ -37,6 +41,12 @@ export function setEdges(sim, edges) {
 		const target = sim.index.get(edge.to);
 		if (source && target && source !== target) sim.links.push({source, target});
 	}
+	const degree = new Map();
+	for (const {source, target} of sim.links) {
+		degree.set(source, (degree.get(source) ?? 0) + 1);
+		degree.set(target, (degree.get(target) ?? 0) + 1);
+	}
+	for (const node of sim.nodes) node.r = radiusOf(degree.get(node) ?? 0);
 }
 
 export function reheat(sim, alpha) {
@@ -83,7 +93,9 @@ export function tick(sim) {
 			const distSq = dx * dx + dy * dy;
 			if (distSq > cutoffSq) continue;
 			const dist = Math.sqrt(distSq);
-			const push = (REPULSION * alpha) / Math.max(distSq, MIN_DISTANCE_SQ);
+			let push = (REPULSION * alpha) / Math.max(dist, MIN_DISTANCE);
+			const overlap = a.r + b.r + COLLIDE_GAP - dist;
+			if (overlap > 0) push += overlap * 0.5;
 			const fx = (dx / dist) * push;
 			const fy = (dy / dist) * push;
 			a.vx -= fx;

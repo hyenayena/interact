@@ -29,7 +29,7 @@ const state = {
 	connect: false,
 	kind: 'plain',
 	source: null,
-	selected: -1,
+	selection: null,
 	hover: null,
 	drag: null,
 	pointer: {x: 0, y: 0},
@@ -142,7 +142,8 @@ function draw() {
 	g2d.setTransform(dpr, 0, 0, dpr, 0, 0);
 	g2d.clearRect(0, 0, w, h);
 	g2d.setTransform(dpr * state.cam.k, 0, 0, dpr * state.cam.k, dpr * state.cam.x, dpr * state.cam.y);
-	state.edges.forEach((edge, i) => drawEdge(edge, i === state.selected));
+	const selectedEdge = state.selection && state.selection.kind === 'edge' ? state.selection.index : -1;
+	state.edges.forEach((edge, i) => drawEdge(edge, i === selectedEdge));
 	g2d.font = FONT;
 	g2d.textAlign = 'center';
 	g2d.textBaseline = 'top';
@@ -156,6 +157,13 @@ function draw() {
 		if (node === state.source || node === state.hover) {
 			g2d.strokeStyle = '#ffffff';
 			g2d.lineWidth = 2 / state.cam.k;
+			g2d.stroke();
+		}
+		if (state.selection && state.selection.kind === 'node' && state.selection.id === node.id) {
+			g2d.strokeStyle = '#f0883e';
+			g2d.lineWidth = 3 / state.cam.k;
+			g2d.beginPath();
+			g2d.arc(node.x, node.y, node.r + 3 / state.cam.k, 0, Math.PI * 2);
 			g2d.stroke();
 		}
 		if (labelsOn || node === state.hover) {
@@ -199,26 +207,82 @@ function pairIndex(a, b) {
 	return state.edges.findIndex(e => (e.from === a && e.to === b) || (e.from === b && e.to === a));
 }
 
+function setSelection(selection) {
+	state.selection = selection;
+	$('remove').disabled = !(selection && selection.kind === 'edge');
+	showNodePanel();
+	schedule();
+}
+
+function clearEdgeSelection() {
+	if (state.selection && state.selection.kind === 'edge') setSelection(null);
+}
+
+function showNodePanel() {
+	const sel = state.selection;
+	const panel = $('node-panel');
+	panel.hidden = !(state.editable && sel && sel.kind === 'node');
+	if (panel.hidden) return;
+	const meta = state.data.byId.get(sel.id);
+	$('node-label').textContent = meta.label;
+	let named = false;
+	for (const button of $('swatches').children) {
+		const on = state.data.palette[button.dataset.color] === meta.color;
+		named = named || on;
+		button.setAttribute('aria-pressed', String(on));
+	}
+	$('node-color').textContent = named ? '' : `custom ${meta.color}`;
+}
+
+function buildSwatches() {
+	for (const [name, hex] of Object.entries(state.data.palette)) {
+		const button = document.createElement('button');
+		button.type = 'button';
+		button.className = 'swatch';
+		button.dataset.color = name;
+		button.setAttribute('aria-label', name);
+		button.setAttribute('aria-pressed', 'false');
+		button.title = name;
+		button.style.backgroundColor = hex;
+		button.addEventListener('click', () => setNodeColor(name));
+		$('swatches').appendChild(button);
+	}
+}
+
+function selectedMeta() {
+	const sel = state.selection;
+	return state.editable && sel && sel.kind === 'node' ? state.data.byId.get(sel.id) : null;
+}
+
+function setNodeColor(name) {
+	const meta = selectedMeta();
+	if (!meta) return;
+	meta.color = state.data.palette[name];
+	showNodePanel();
+	scheduleSave();
+	schedule();
+}
+
 function addEdge(from, to) {
 	if (!state.editable || from === to) return;
 	const existing = pairIndex(from, to);
 	if (existing >= 0) state.edges.splice(existing, 1);
 	state.edges.push({from, to, kind: state.kind});
-	state.selected = -1;
+	clearEdgeSelection();
 	edgesChanged();
 }
 
 function removeSelected() {
-	if (!state.editable || state.selected < 0) return;
-	state.edges.splice(state.selected, 1);
-	state.selected = -1;
+	const sel = state.selection;
+	if (!state.editable || !sel || sel.kind !== 'edge') return;
+	state.edges.splice(sel.index, 1);
+	setSelection(null);
 	edgesChanged();
 }
 
 function edgesChanged() {
 	setEdges(state.sim, state.edges);
 	reheat(state.sim, 0.3);
-	$('remove').disabled = state.selected < 0;
 	scheduleSave();
 	schedule();
 }
@@ -245,10 +309,14 @@ function scheduleSave() {
 	state.saveTimer = setTimeout(save, SAVE_DELAY_MS);
 }
 
+function body() {
+	return {edges: state.edges, nodes: state.data.nodes.map(n => ({id: n.id, color: n.color}))};
+}
+
 function save() {
 	state.saveTimer = 0;
 	setStatus('Saving...');
-	state.saving = postJson('edges', {edges: state.edges})
+	state.saving = postJson('edges', body())
 		.then(() => setStatus('Saved'))
 		.catch(err => setStatus(`Not saved: ${err.message}`));
 	return state.saving;
@@ -260,7 +328,7 @@ function setEditable(on) {
 	if (!on) {
 		state.connect = false;
 		state.source = null;
-		state.selected = -1;
+		setSelection(null);
 	}
 	schedule();
 }
@@ -272,7 +340,7 @@ async function finish() {
 	await state.saving;
 	setStatus('Sending...');
 	try {
-		const result = await postJson('done', {edges: state.edges});
+		const result = await postJson('done', body());
 		setEditable(false);
 		showHelp();
 		setStatus(result.chat === 'sent' ? 'Sent to the chat.' : result.chat === 'refused' ? REFUSED : NO_CHAT);
@@ -316,10 +384,10 @@ function onPointerDown(event) {
 	} else if (node) {
 		state.drag = {kind: 'node', id: node.id, dx: node.x - w.x, dy: node.y - w.y};
 		pin(state.sim, node.id, node.x, node.y);
+		if (state.editable) setSelection({kind: 'node', id: node.id});
 	} else {
 		const hit = state.editable ? edgeAt(w.x, w.y) : -1;
-		state.selected = hit;
-		$('remove').disabled = hit < 0;
+		setSelection(hit >= 0 ? {kind: 'edge', index: hit} : null);
 		state.drag = {kind: 'pan', x: p.x, y: p.y, cx: state.cam.x, cy: state.cam.y};
 		if (state.connect) state.source = null;
 	}
@@ -376,10 +444,8 @@ function onKey(event) {
 	else if (key === 'c') setConnect(!state.connect);
 	else if (key === 'escape') {
 		state.source = null;
-		state.selected = -1;
+		setSelection(null);
 		setConnect(false);
-		$('remove').disabled = true;
-		schedule();
 	} else if (key === 'delete' || key === 'backspace') {
 		event.preventDefault();
 		removeSelected();
@@ -390,7 +456,7 @@ function onKey(event) {
 
 function showHelp() {
 	$('help').textContent = state.editable
-		? 'Drag nodes to move them, drag empty space to pan, scroll to zoom. Connect (C) then click two nodes, or Shift+drag from one node to another. Click an edge and press Delete to remove it. Keys 1, 2, 3 pick the edge kind; F fits the view.'
+		? 'Drag nodes to move them, drag empty space to pan, scroll to zoom. Connect (C) then click two nodes, or Shift+drag from one node to another. Click an edge and press Delete to remove it. Click a node to change its color. Keys 1, 2, 3 pick the edge kind; F fits the view.'
 		: 'Drag nodes to move them, drag empty space to pan, scroll to zoom. F fits the view.';
 }
 
@@ -408,6 +474,7 @@ async function main() {
 	state.data = data;
 	state.edges = data.edges.map(e => ({...e}));
 	state.sim = createSim(data.nodes, state.edges);
+	buildSwatches();
 	$('title').textContent = data.title || 'Graph';
 	document.title = data.title || 'Graph';
 	setEditable(data.interactive && !data.finished);

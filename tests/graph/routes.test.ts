@@ -5,7 +5,7 @@ import path from 'node:path';
 import {afterEach, test} from 'node:test';
 import {noopLog} from '../../src/log.js';
 import {createGraphRoutes} from '../../src/graph/routes.js';
-import {validateGraph} from '../../src/graph/schema.js';
+import {COLORS, validateGraph} from '../../src/graph/schema.js';
 import {createGraphStore} from '../../src/graph/store.js';
 
 const dirs: string[] = [];
@@ -52,7 +52,7 @@ test('GET serves the page and the data of a graph', async () => {
 	const data = await s.call(s.graph, 'GET', [rec.id, 'data']);
 	assert.equal(data.status, 200);
 	assert.match(data.type!, /^application\/json/);
-	assert.deepEqual(parsed(data), {id: rec.id, title: 'T', interactive: true, finished: false, nodes: rec.nodes, edges: rec.edges});
+	assert.deepEqual(parsed(data), {id: rec.id, title: 'T', interactive: true, finished: false, nodes: rec.nodes, edges: rec.edges, palette: COLORS});
 });
 
 test('unknown graphs and paths are 404', async () => {
@@ -95,6 +95,46 @@ test('a post body must be exactly {edges} and valid', async () => {
 	assert.equal(invalidUtf8.status, 400);
 });
 
+test('a post with nodes must have valid styles', async () => {
+	const s = await setup();
+	const rec = await s.store.create(s.input, true);
+	const bad = [
+		{edges: [], nodes: 'x'},
+		{edges: [], nodes: [{id: 'zz', color: 'red'}]},
+		{edges: [], nodes: [{id: 'a', color: 'red'}, {id: 'a', color: 'red'}]},
+		{edges: [], nodes: [{id: 'a', size: 2, color: 'red'}]},
+		{edges: [], nodes: [{id: 'a'}]},
+		{edges: [], nodes: [{id: 'a', color: 'nope'}]},
+		{edges: [], nodes: [{id: 'a', color: 'red', label: 'x'}]},
+		{nodes: []},
+	];
+	for (const body of bad) {
+		for (const action of ['edges', 'done']) {
+			const r = await s.call(s.graph, 'POST', [rec.id, action], body);
+			assert.equal(r.status, 400, JSON.stringify(body));
+			assert.equal(typeof parsed(r).error, 'string');
+		}
+	}
+	assert.deepEqual(await s.store.read(rec.id), rec);
+	assert.deepEqual(s.posted, []);
+	for (const action of ['edges', 'done']) {
+		const r = await s.call(s.graph, 'POST', [rec.id, action], {edges: [], nodes: [{id: 'a', size: 2, color: 'red'}]});
+		assert.equal(r.status, 400);
+		assert.match(r.body as string, /unknown key/);
+		assert.doesNotMatch(r.body as string, /size/);
+	}
+});
+
+test('styles are saved with the edges', async () => {
+	const s = await setup();
+	const rec = await s.store.create(s.input, true);
+	const r = await s.call(s.graph, 'POST', [rec.id, 'edges'], {edges: [], nodes: [{id: 'b', color: '#ABCDEF'}]});
+	assert.equal(r.status, 200);
+	const after = await s.store.read(rec.id);
+	assert.deepEqual(after?.nodes.find(n => n.id === 'b'), {id: 'b', label: 'b', color: '#abcdef'});
+	assert.deepEqual(after?.initialStyles, rec.initialStyles);
+});
+
 test('edges are saved', async () => {
 	const s = await setup();
 	const rec = await s.store.create(s.input, true);
@@ -112,9 +152,13 @@ test('a view only graph is 403 and a finished one is 409', async () => {
 	assert.equal((await s.call(s.graph, 'POST', [view.id, 'done'], {edges: []})).status, 403);
 	assert.equal(parsed(await s.call(s.graph, 'GET', [view.id, 'data'])).interactive, false);
 	const rec = await s.store.create(s.input, true);
-	await s.store.finish(rec.id, []);
+	await s.store.finish(rec.id, {edges: []});
 	assert.equal((await s.call(s.graph, 'POST', [rec.id, 'edges'], {edges: []})).status, 409);
 	assert.equal((await s.call(s.graph, 'POST', [rec.id, 'done'], {edges: []})).status, 409);
+	const withNodes = {edges: [], nodes: [{id: 'a', color: 'red'}]};
+	assert.equal((await s.call(s.graph, 'POST', [view.id, 'edges'], withNodes)).status, 403);
+	assert.equal((await s.call(s.graph, 'POST', [rec.id, 'edges'], withNodes)).status, 409);
+	assert.equal((await s.call(s.graph, 'POST', [rec.id, 'done'], withNodes)).status, 409);
 	assert.equal(parsed(await s.call(s.graph, 'GET', [rec.id, 'data'])).finished, true);
 	assert.deepEqual(s.posted, []);
 });
@@ -133,6 +177,14 @@ test('done saves, finishes and sends the result to the chat', async () => {
 	assert.match(s.posted[0]!, /Removed: a -- b/);
 	assert.equal((await s.call(s.graph, 'POST', [rec.id, 'done'], {edges: []})).status, 409);
 	assert.equal(s.posted.length, 1);
+});
+
+test('done reports restyled nodes', async () => {
+	const s = await setup();
+	const rec = await s.store.create(s.input, true);
+	const r = await s.call(s.graph, 'POST', [rec.id, 'done'], {edges: rec.edges, nodes: [{id: 'a', color: 'red'}, {id: 'b', color: COLORS.blue}]});
+	assert.equal(r.status, 200);
+	assert.match(s.posted[0]!, /Restyled: a: color blue -> red\n/);
 });
 
 test('done reports no-chat and refused', async () => {

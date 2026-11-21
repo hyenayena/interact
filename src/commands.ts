@@ -4,7 +4,7 @@ import path from 'node:path';
 import type {Command, CommandContext, Logger, StyledBlock, Subcommand} from '../../../src/api.js';
 import {commandError, line, printStyled, span, table} from './deps/core.js';
 import type {WebStatus} from './deps/web.js';
-import {COLORS, diffEdges, formatEdge, GRAPH_LIMITS, parseGraphText, type EdgeDiff} from './graph/schema.js';
+import {colorName, COLORS, diffGraph, formatEdge, formatRestyle, GRAPH_LIMITS, parseGraphText, type GraphDiff} from './graph/schema.js';
 import {GRAPH_ID_RE, type GraphRecord, type GraphStore} from './graph/store.js';
 
 export type CommandDeps = {
@@ -24,13 +24,13 @@ const subs: Subcommand[] = [
 		description: 'Make a graph page and print its address',
 		args: [{name: 'json', description: 'The graph as one quoted JSON word'}],
 		options: [
-			{name: '--interactive', description: 'Let the user edit the edges and press Done'},
+			{name: '--interactive', description: 'Let the user edit the edges and node colors and press Done'},
 			{name: '--file', value: '<path>', description: 'Read the graph JSON from a file (up to 256 KiB)'},
 		],
 		notes: [
-			'JSON: {"title"?, "nodes": [{"id", "label"?, "size"?, "color"?}], "edges"?: [{"from", "to", "kind"?}]}',
+			'JSON: {"title"?, "nodes": [{"id", "label"?, "color"?}], "edges"?: [{"from", "to", "kind"?}]}',
 			`Up to ${GRAPH_LIMITS.nodes} nodes and ${GRAPH_LIMITS.edges} edges; ids are 1 to 64 of letters, digits and _ . : -`,
-			'size is 1 to 5 (default 2); kind is plain, directed or bidirectional (default plain)',
+			'kind is plain, directed or bidirectional (default plain); there is no size key: a node is drawn larger the more edges it has',
 			`color: ${Object.keys(COLORS).join(', ')} or #rgb / #rrggbb (default blue)`,
 			'Quote the JSON as one word; for a big graph write a file under /tmp and use --file',
 			'One edge per pair of nodes; use bidirectional for both directions',
@@ -57,12 +57,13 @@ const clip = (text: string, max: number): string => {
 
 const stateOf = (g: GraphRecord): string => (!g.interactive ? 'view only' : g.finishedAt !== undefined ? 'finished' : 'open');
 
-function changeLines(diff: EdgeDiff): string[] {
+function changeLines(diff: GraphDiff): string[] {
 	const part = (label: string, items: string[]): string => `${label}: ${items.length === 0 ? '(none)' : items.join('; ')}`;
 	return [
 		part('Added', diff.added.map(formatEdge)),
 		part('Removed', diff.removed.map(formatEdge)),
 		part('Changed', diff.changed.map(c => `${formatEdge(c.before)} => ${formatEdge(c.after)}`)),
+		part('Restyled', diff.restyled.map(formatRestyle)),
 	];
 }
 
@@ -148,7 +149,7 @@ export function createCommand(deps: CommandDeps): Command {
 		if (!GRAPH_ID_RE.test(id)) throw commandError('invalid', 'Not a graph id');
 		const g = await store.read(id);
 		if (!g) throw commandError('not-found', 'No such graph');
-		const diff = diffEdges(g.initialEdges, g.edges);
+		const diff = diffGraph(g);
 		if (asJson) {
 			const {v: _v, ...stored} = g;
 			ctx.print(JSON.stringify({...stored, diff}));
@@ -157,7 +158,7 @@ export function createCommand(deps: CommandDeps): Command {
 		const state = !g.interactive ? 'view only' : g.finishedAt !== undefined ? `finished at ${stamp(g.finishedAt)} UTC` : 'interactive, not finished';
 		ctx.print(`Graph ${g.id}${g.title ? ` "${clip(g.title, 80)}"` : ''}: ${state}`);
 		ctx.print(`Nodes (${g.nodes.length}):`);
-		for (const n of g.nodes) ctx.print(`  ${n.id}: ${n.label}`);
+		for (const n of g.nodes) ctx.print(`  ${n.id}: ${n.label} (${colorName(n.color)})`);
 		ctx.print(`Edges (${g.edges.length}):`);
 		for (const e of g.edges) ctx.print(`  ${formatEdge(e)}`);
 		if (g.interactive) for (const l of changeLines(diff)) ctx.print(l);

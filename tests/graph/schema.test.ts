@@ -1,15 +1,15 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {checkEdges, COLORS, diffEdges, formatEdge, GRAPH_LIMITS, parseGraphText, validateGraph} from '../../src/graph/schema.js';
+import {checkChange, checkEdges, checkNodeStyles, colorName, COLORS, diffEdges, diffGraph, diffStyles, formatEdge, formatRestyle, GRAPH_LIMITS, parseGraphText, validateGraph} from '../../src/graph/schema.js';
 
 const ok = (value: unknown) => validateGraph(value);
 const bad = (value: unknown, pattern: RegExp) => assert.throws(() => validateGraph(value), pattern);
 const nodes = (n: number) => Array.from({length: n}, (_, i) => ({id: `n${i}`}));
 
 test('defaults are filled in', () => {
-	const g = ok({nodes: [{id: 'a'}, {id: 'b', label: '  Bee  ', size: 5, color: 'red'}, {id: 'c', color: '#ABC'}], edges: [{from: 'a', to: 'b'}]});
-	assert.deepEqual(g.nodes[0], {id: 'a', label: 'a', size: 2, color: COLORS.blue});
-	assert.deepEqual(g.nodes[1], {id: 'b', label: 'Bee', size: 5, color: COLORS.red});
+	const g = ok({nodes: [{id: 'a'}, {id: 'b', label: '  Bee  ', color: 'red'}, {id: 'c', color: '#ABC'}], edges: [{from: 'a', to: 'b'}]});
+	assert.deepEqual(g.nodes[0], {id: 'a', label: 'a', color: COLORS.blue});
+	assert.deepEqual(g.nodes[1], {id: 'b', label: 'Bee', color: COLORS.red});
 	assert.equal(g.nodes[2]!.color, '#abc');
 	assert.deepEqual(g.edges, [{from: 'a', to: 'b', kind: 'plain'}]);
 	assert.equal(g.title, undefined);
@@ -33,7 +33,7 @@ test('node fields are checked', () => {
 	bad({nodes: [{id: 'x'.repeat(65)}]}, /nodes\[0\]\.id/);
 	bad({nodes: [{id: 5}]}, /nodes\[0\]\.id/);
 	bad({nodes: [{id: 'a'}, {id: 'a'}]}, /nodes\[1\]\.id: duplicate id "a"/);
-	for (const size of [0, 6, 1.5, '2', null]) bad({nodes: [{id: 'a', size}]}, /size/);
+	bad({nodes: [{id: 'a', size: 2}]}, /nodes\[0\]: unknown key$/);
 	for (const color of ['mauve', '#12', '#12345g', 5, 'constructor', '__proto__']) bad({nodes: [{id: 'a', color}]}, /color/);
 	bad({nodes: [{id: 'a', label: 5}]}, /label: must be a string/);
 	bad({nodes: ['a']}, /nodes\[0\]: must be an object/);
@@ -76,6 +76,49 @@ test('checkEdges validates a page post against the nodes', () => {
 	assert.deepEqual(checkEdges(list, [{from: 'a', to: 'b', kind: 'directed'}]), [{from: 'a', to: 'b', kind: 'directed'}]);
 	assert.throws(() => checkEdges(list, [{from: 'a', to: 'c'}]), /no such node/);
 	assert.throws(() => checkEdges(list, 'x'), /must be a list/);
+});
+
+test('checkNodeStyles validates node styles against the nodes', () => {
+	const list = [{id: 'a'}, {id: 'b'}];
+	assert.deepEqual(checkNodeStyles(list, [{id: 'a', color: 'red'}, {id: 'b', color: '#ABC'}]), [
+		{id: 'a', color: COLORS.red},
+		{id: 'b', color: '#abc'},
+	]);
+	assert.deepEqual(checkNodeStyles(list, []), []);
+	const refuse = (value: unknown, pattern: RegExp) => assert.throws(() => checkNodeStyles(list, value), pattern);
+	refuse('x', /nodes: must be a list/);
+	refuse([{id: 'z', color: 'red'}], /nodes\[0\]\.id: no such node "z"$/);
+	refuse([{id: 'a b', color: 'red'}], /nodes\[0\]\.id: no such node$/);
+	refuse([{id: 'a', color: 'red'}, {id: 'a', color: 'red'}], /nodes\[1\]\.id: duplicate id "a"/);
+	refuse([{id: 'a', size: 2, color: 'red'}], /nodes\[0\]: unknown key$/);
+	for (const color of ['nope', '#12', 5, undefined]) refuse([{id: 'a', color}], /nodes\[0\]\.color: /);
+	refuse([{id: 'a', color: 'red', label: 'x'}], /nodes\[0\]: unknown key$/);
+	refuse([1], /nodes\[0\]: must be an object/);
+	refuse(Array.from({length: GRAPH_LIMITS.nodes + 1}, () => ({})), /more than 500 nodes/);
+});
+
+test('checkChange takes {edges, nodes?} and nothing else', () => {
+	const list = [{id: 'a'}, {id: 'b'}];
+	for (const body of [{}, {nodes: []}, {edges: [], extra: 1}, [], null, 'x']) assert.throws(() => checkChange(list, body), /^Error: The body must be \{"edges": \[\.\.\.\], "nodes"\?: \[\.\.\.\]\}$/);
+	assert.throws(() => checkChange(list, {edges: [], nodes: 'x'}), /nodes: must be a list/);
+	assert.deepEqual(checkChange(list, {edges: []}), {edges: []});
+	assert.deepEqual(checkChange(list, {edges: [], nodes: [{id: 'a', color: 'teal'}]}), {edges: [], styles: [{id: 'a', color: COLORS.teal}]});
+});
+
+test('diffGraph and diffStyles list only the restyled nodes', () => {
+	const initial = [{id: 'a', color: COLORS.blue}, {id: 'b', color: COLORS.blue}, {id: 'c', color: '#abcdef'}];
+	const current = [{id: 'c', color: '#123456'}, {id: 'b', color: COLORS.blue}, {id: 'a', color: COLORS.red}];
+	assert.deepEqual(diffStyles(initial, current).map(r => r.id), ['c', 'a']);
+	const diff = diffGraph({initialEdges: [], edges: [{from: 'a', to: 'b', kind: 'plain'}], initialStyles: initial, nodes: current});
+	assert.equal(diff.added.length, 1);
+	assert.deepEqual(diff.restyled.map(formatRestyle), ['c: color #abcdef -> #123456', 'a: color blue -> red']);
+	assert.deepEqual(diffStyles(initial, initial), []);
+});
+
+test('colorName gives the name of a palette color or the hex', () => {
+	assert.equal(colorName(COLORS.blue!), 'blue');
+	assert.equal(colorName('#abcdef'), '#abcdef');
+	assert.equal(formatRestyle({id: 'x', before: {color: COLORS.gray!}, after: {color: '#fff'}}), 'x: color gray -> #fff');
 });
 
 test('diffEdges finds added, removed and changed edges', () => {

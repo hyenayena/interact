@@ -24,6 +24,9 @@ test('the page has no inline script or style and only same-origin assets', () =>
 	assert.match(scripts[0]![1]!, /src="\/interact\/assets\/graph\.js"/);
 	assert.equal(scripts[0]![2]!.trim(), '');
 	assert.match(html, /<link rel="stylesheet" href="\/interact\/assets\/graph\.css">/);
+	assert.match(html, /id="node-panel"/);
+	assert.doesNotMatch(html, /data-size/);
+	assert.doesNotMatch(read('graph.js'), /setRadius|setNodeSize/);
 	assert.equal(/<style\b|\sstyle=|\son[a-z]+=|https?:\/\//i.test(html), false);
 });
 
