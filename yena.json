@@ -1,6 +1,6 @@
 {
 	"name": "interact",
-	"version": "0.2.0",
+	"version": "0.2.1",
 	"description": "Web pages the assistant makes for you: graphs to view and edit",
 	"runtime": "node",
 	"entry": "src/index.ts",
